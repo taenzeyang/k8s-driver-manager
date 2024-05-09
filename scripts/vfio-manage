@@ -9,7 +9,7 @@ Usage: $0 COMMAND [ARG...]
 
  Commands:
    bind   [-a | --all] [-d | --device-id]
-   unbind [-a | --all] [-d | --device-id]
+   unbind [-a | --all] [-d | --device-id] [-n | --all-to-nvidia]
    help [-h]
 EOF
     exit 0
@@ -28,6 +28,11 @@ unbind_from_driver() {
     echo "unbinding device $gpu from driver $existing_driver_name"
     echo "$gpu" > "$existing_driver/unbind"
     echo > /sys/bus/pci/devices/$gpu/driver_override
+
+    if [ "$ALL_TO_NVIDIA" == "true" ]; then
+      echo "nvidia" > /sys/bus/pci/devices/$gpu/driver_override
+      echo "$gpu" > /sys/bus/pci/drivers_probe
+    fi
 }
 
 # unbind device from non vfio-pci driver
@@ -137,7 +142,7 @@ handle_bind() {
 handle_unbind() {
     if [ "$DEVICE_ID" != "" ]; then
         unbind_device $DEVICE_ID
-    elif [ "$ALL_DEVICES" = "true" ]; then
+    elif [ "$ALL_DEVICES" = "true" ] || [ "$ALL_TO_NVIDIA" = "true" ]; then
         unbind_all
     else
         usage
@@ -151,7 +156,7 @@ fi
 command=$1; shift
 case "${command}" in
     bind) options=$(getopt -o ad: --long all,device-id: -- "$@");;
-    unbind) options=$(getopt -o ad: --long all,device-id: -- "$@");;
+    unbind) options=$(getopt -o adn: --long all,device-id,all-to-nvidia: -- "$@");;
     help) options="" ;;
     *) usage ;;
 esac
@@ -161,11 +166,14 @@ fi
 
 eval set -- "${options}"
 
+ALL_DEVICES=false
 DEVICE_ID=""
+ALL_TO_NVIDIA=false
 for opt in ${options}; do
     case "$opt" in
     -a | --all) ALL_DEVICES=true; shift 1 ;;
     -d | --device-id) DEVICE_ID=$2; shift 2 ;;
+    -n | --all-to-nvidia) ALL_TO_NVIDIA=true; shift 2;;
     -h | --help) shift;;
     --) shift; break ;;
     esac

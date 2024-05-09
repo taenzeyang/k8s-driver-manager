@@ -570,18 +570,7 @@ _wait_for_mofed_driver() {
     done
 }
 
-uninstall_driver() {
-    # don't attempt to un-install if driver is pre-installed on the node
-    if _host_driver; then
-        echo "NVIDIA GPU driver is already pre-installed on the node, disabling the containerized driver on the node"
-        kubectl label --overwrite \
-          node ${NODE_NAME} \
-          nvidia.com/gpu.deploy.driver=pre-installed
-        # add wait here as pod termination can take 30s due to default grace-period
-        sleep 60
-        exit 1
-    fi
-
+switch_driver() {
     # fetch current status of all component labels
     _fetch_current_labels
 
@@ -600,40 +589,16 @@ uninstall_driver() {
             # are running on the node and cannot be deleted. Attempt
             # to drain the node in this case.
             echo "Failed to drain node of GPU pods"
-            if ! _is_auto_drain_enabled; then
-                echo "Cannot proceed until all GPU pods are drained from the node. Exiting."
-                _exit_failed
-            fi
-            echo "Attempting node drain"
-            trap '_exit_failed' ERR
-            _drain_k8s_node
-            _cleanup_driver
         fi
     fi
 
-
-    # check if driver is already loaded
-    if _driver_loaded; then
-        _cleanup_driver
-        if [ "$?" != "0" ]; then
-            if _is_auto_drain_enabled; then
-                echo "Unable to cleanup driver modules, attempting again with node drain..."
-                trap '_exit_failed' ERR
-                _drain_k8s_node
-                _cleanup_driver
-            else
-                echo "Failed to uninstall nvidia driver components"
-                _exit_failed
-            fi
-        fi
-        echo "Successfully uninstalled nvidia driver components"
-    fi
 
     # If vfio-pci driver is in use, ensure we unbind it from all devices.
-    # If vfio-pci driver is not in use and we have reached this point, all
-    # devices will not be bound to any driver, so the below unbind operation
-    # will be a no-op.
-    vfio-manage unbind --all
+    if [ "$ALL_TO_NVIDIA" != "true" ]; then
+        vfio-manage unbind --all
+    else
+        vfio-manage unbind --all-to-nvidia true
+    fi
     if [ "$?" != "0" ]; then
         echo "Unable to unbind vfio-pci driver from all devices"
         _exit_failed
@@ -660,7 +625,10 @@ uninstall_driver() {
         fi
         echo "Successfully unloaded nouveau driver"
     fi
-    exit 0
+
+    if [ "$ALL_TO_NVIDIA" != "true" ]; then
+        vfio-manage bind --all
+    fi
 }
 
 preflight_check() {
@@ -772,7 +740,7 @@ usage() {
 Usage: $0 COMMAND [ARG...]
 
 Commands:
-  uninstall_driver
+  switch_driver [-n | --all-to-nvidia]
   preflight_check
 EOF
     exit 1
@@ -783,7 +751,7 @@ if [ $# -eq 0 ]; then
 fi
 command=$1; shift
 case "${command}" in
-    uninstall_driver) ;;
+    switch_driver) options=$(getopt -o n: --long all-to-nvidia: -- "$@");;
     preflight_check) ;;
     *) usage ;;
 esac
@@ -791,4 +759,17 @@ if [ $? -ne 0 ]; then
     usage
 fi
 
+eval set -- "${options}"
+
+ALL_TO_NVIDIA=false
+for opt in ${options}; do
+    case "$opt" in
+    -n | --all-to-nvidia) ALL_TO_NVIDIA=true; shift 2;;
+    -h | --help) shift;;
+    --) shift; break ;;
+    esac
+done
+if [ $# -ne 0 ]; then
+    usage
+fi
 $command
